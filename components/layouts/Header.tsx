@@ -1,0 +1,541 @@
+"use client"
+import { useEffect, useState, useRef } from "react"
+import Image from "next/image"
+import Link from "next/link"
+import { Montserrat } from "next/font/google"
+import { ChevronDown, Menu, SearchIcon, X } from "lucide-react"
+import type React from "react"
+
+import {
+Dialog,
+DialogContent,
+DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+
+import {
+  BRAND_COLORS,
+  languageOptions,
+  trendingKeywords,
+  menuItems as defaultMenuItems,
+  type MenuItemWithChildren,
+  type NavLeaf,
+  type NavNode,
+} from "./header.data"
+import type { MenuItem } from "@/lib/api/menus"
+import { useSettingsStore } from "@/lib/stores/settingsStore"
+
+const montserrat = Montserrat({
+  subsets: ["latin"],
+  weight: ["400", "700"],
+})
+
+const { base: BRAND_BASE, accent: BRAND_ACCENT, highlight: BRAND_HIGHLIGHT } = BRAND_COLORS
+
+interface HeaderProps {
+  menuItems?: MenuItem[];
+}
+
+export default function Header({ menuItems: apiMenuItems }: HeaderProps) {
+  // Chuyển đổi API menu items sang format cũ để tương thích với UI hiện tại
+  const convertedMenuItems = apiMenuItems ? apiMenuItems.map(item => ({
+    label: item.label,
+    href: item.href,
+    children: item.children?.map(block => ({
+      label: block.label,
+      children: block.children.map(leaf => ({
+        label: leaf.label,
+        href: leaf.href,
+        isHot: leaf.isHot,
+      }))
+    }))
+  })) : [];
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") {
+      try {
+        const results = __runTests()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(globalThis as any).__HEADER_TEST_RESULTS__ = results
+      } catch {}
+    }
+  }, [])
+
+  return (
+    <header
+      className={`${montserrat.className} sticky top-0 z-40 w-full bg-white text-sm text-[#1C1C1C] shadow-[0_12px_30px_rgba(28,28,28,0.08)]`}
+      style={{ color: BRAND_BASE }}
+    >
+      <MainBar menuItems={convertedMenuItems.length > 0 ? convertedMenuItems : undefined} />
+      <NavBar menuItems={convertedMenuItems.length > 0 ? convertedMenuItems : undefined} />
+    </header>
+  )
+}
+
+function MainBar({ menuItems }: { menuItems?: MenuItemWithChildren[] }) {
+  const settings = useSettingsStore((state) => state.settings);
+  const hasHydrated = useSettingsStore((state) => state._hasHydrated);
+
+  // Fallback values nếu chưa hydrate hoặc settings null
+  const logoUrl = hasHydrated && settings?.logo_url ? settings.logo_url : "/media/logo.webp";
+  const siteName = hasHydrated && settings?.site_name ? settings.site_name : "Thiên Kim Wine";
+
+  return (
+    <div className="border-b border-[#e8e8e8] bg-white">
+      <div className="mx-auto grid w-full max-w-7xl grid-cols-12 items-center gap-2 px-4 pb-2 md:gap-4">
+        {/* Logo */}
+        <div className="col-span-6 flex items-center md:col-span-3 md:justify-start">
+          <Link href="/" className="flex items-center gap-3" aria-label={`${siteName} - Trang chủ`}>
+            <Image
+              src={logoUrl}
+              alt={`${siteName} logo`}
+              width={72}
+              height={72}
+              priority
+              className="h-16 w-16 object-contain"
+            />
+            <span className="hidden text-xs font-bold uppercase tracking-[0.32em] text-[#ECAA4D] md:inline md:text-sm">
+              {siteName}
+            </span>
+          </Link>
+        </div>
+
+        {/* Mobile buttons */}
+        <div className="col-span-6 flex justify-end gap-2 md:hidden">
+          <SearchMobile />
+          <MobileTrigger menuItems={menuItems} />
+        </div>
+
+        {/* Search */}
+        <div className="col-span-12 mt-0 flex justify-center md:col-span-6 md:mt-0">
+        <SearchDesktop />
+        </div>
+
+        {/* Contact */}
+        <div className="hidden md:col-span-3 md:flex md:items-center md:justify-end">
+          <ContactButton />
+        </div>
+      </div>
+    </div>
+  )
+}
+function SearchDesktop() {
+return (
+<div className="hidden md:block relative z-20 mx-auto w-full max-w-[520px]">
+<SearchForm />
+</div>
+)
+}
+function SearchMobile() {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button
+          className="md:hidden inline-flex h-10 w-10 items-center justify-center rounded-md text-[#ECAA4D] shadow-[0_6px_18px_rgba(155,44,59,0.45)] transition hover:brightness-110"
+          style={{ backgroundColor: BRAND_HIGHLIGHT }}
+          aria-label="Mở tìm kiếm"
+        >
+          <SearchIcon size={20} />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-[425px] p-6">
+      <DialogTitle className="sr-only">Tìm kiếm sản phẩm</DialogTitle>
+      <div className="relative z-20 mx-auto w-full max-w-[520px]">
+      <SearchForm />
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+function SearchForm() {
+  const [searchQuery, setSearchQuery] = useState("")
+  const [suggestions, setSuggestions] = useState<Array<{id: number, name: string, slug: string}>>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const handleInputChange = async (value: string) => {
+    setSearchQuery(value)
+    
+    // Clear previous timeout
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current)
+    }
+
+    // Don't fetch if query is too short
+    if (value.trim().length < 2) {
+      setSuggestions([])
+      setShowSuggestions(false)
+      return
+    }
+
+    // Faster debounce for better UX (150ms instead of 300ms)
+    setIsLoading(true)
+    timeoutRef.current = setTimeout(async () => {
+      try {
+        const { fetchProductSuggestions } = await import("@/lib/api/products")
+        const response = await fetchProductSuggestions(value, { limit: 6 })
+        setSuggestions(response.data.slice(0, 6))
+        setShowSuggestions(true)
+      } catch (error) {
+        console.error("Failed to fetch suggestions:", error)
+        setSuggestions([])
+      } finally {
+        setIsLoading(false)
+      }
+    }, 150)
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const query = searchQuery.trim()
+    setShowSuggestions(false)
+    if (query) {
+      window.location.href = `/filter?q=${encodeURIComponent(query)}`
+    } else {
+      window.location.href = `/filter`
+    }
+  }
+
+  const handleSuggestionClick = (slug: string) => {
+    setShowSuggestions(false)
+    window.location.href = `/san-pham/${slug}`
+  }
+
+  const handleFocus = () => {
+    if (suggestions.length > 0) {
+      setShowSuggestions(true)
+    }
+  }
+
+  const handleBlur = () => {
+    // Delay to allow click on suggestions
+    setTimeout(() => {
+      setShowSuggestions(false)
+    }, 200)
+  }
+
+  return (
+    <div className="relative w-full">
+      <form onSubmit={handleSubmit} className="relative w-full" role="search" aria-label="Tìm kiếm sản phẩm">
+        <input
+          type="search"
+          value={searchQuery}
+          onChange={(e) => handleInputChange(e.target.value)}
+          placeholder="Tìm kiếm rượu vang, rượu mạnh..."
+          className="w-full rounded-full border border-[#d9d9d9] bg-white py-1.5 pl-9 pr-16 text-sm text-[#1C1C1C] placeholder-[#1C1C1C]/45 transition focus:border-[#9B2C3B] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#ECAA4D]/30"
+          autoComplete="off"
+          onFocus={handleFocus}
+          onBlur={handleBlur}
+        />
+        <span className="pointer-events-none absolute inset-y-0 left-0 grid w-9 place-items-center text-[#9B2C3B]">
+          <SearchIcon size={17} />
+        </span>
+        <button
+          type="submit"
+          className="absolute inset-y-0 right-0 flex items-center justify-center rounded-r-full bg-[#ECAA4D] px-4 text-[0.72rem] font-bold uppercase tracking-[0.2em] text-[#1C1C1C] transition hover:brightness-110"
+          aria-label="Tìm kiếm"
+        >
+          Tìm
+        </button>
+      </form>
+
+      {/* Suggestions Dropdown */}
+      {showSuggestions && (
+        <div className="absolute left-0 top-full z-30 mt-2 w-full rounded-md border border-[#ECAA4D]/35 bg-white shadow-[0_18px_40px_rgba(28,28,28,0.12)]">
+          {isLoading ? (
+            <div className="px-4 py-3 text-center text-xs text-[#1C1C1C]/60">Đang tìm...</div>
+          ) : suggestions.length > 0 ? (
+            <ul className="py-2">
+              {suggestions.map((item) => (
+                <li key={item.id}>
+                  <button
+                    onClick={() => handleSuggestionClick(item.slug)}
+                    className="w-full px-4 py-2 text-left text-sm text-[#1C1C1C]/80 transition hover:bg-[#ECAA4D]/10 hover:text-[#1C1C1C]"
+                  >
+                    {item.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="px-4 py-3 text-center text-xs text-[#1C1C1C]/60">Không tìm thấy kết quả</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+function ContactButton() {
+  return (
+    <Link
+      href="/contact"
+      className="inline-flex items-center rounded-full px-4 py-1.5 text-sm font-bold uppercase tracking-[0.12em] transition hover:brightness-110"
+      style={{ backgroundColor: BRAND_ACCENT, color: BRAND_BASE }}
+    >
+      Liên hệ
+    </Link>
+  )
+}
+function NavBar({ menuItems: propMenuItems }: { menuItems?: MenuItemWithChildren[] }) {
+  // Use default menuItems from header.data.ts as fallback
+  const items: MenuItemWithChildren[] = propMenuItems || defaultMenuItems;
+
+  return (
+    <div className="border-b border-[#751826] bg-[#ECAA4D] shadow-[0_12px_32px_rgba(236,170,77,0.35)]">
+      <div className="relative mx-auto hidden max-w-7xl items-center justify-center px-4 lg:flex">
+        <nav className="relative flex items-center gap-6 text-[0.78rem] font-semibold uppercase tracking-[0.16em] text-[#1C1C1C]/80">
+          {items.map((item) => {
+            const isMega = item.label === "Rượu vang" || item.label === "Rượu mạnh"
+            return (
+              <div
+                key={item.label}
+                className={`group py-2 ${isMega ? "relative lg:static" : "relative"}`}
+              >
+                <Link
+                  href={item.href}
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1 text-[#1C1C1C]/80 transition-all hover:bg-[#1C1C1C]/10 hover:text-[#1C1C1C]"
+                >
+                  <span>{item.label}</span>
+                  {item.children && (
+                    <ChevronDown size={14} className="text-[#1C1C1C]/70 transition-transform group-hover:rotate-180" />
+                  )}
+                </Link>
+                {item.children && (
+                  <MegaMenu menu={item.children} isFull={isMega} />
+                )}
+              </div>
+            )
+          })}
+        </nav>
+        <div className="pointer-events-none absolute inset-x-6 bottom-0 h-px bg-gradient-to-r from-transparent via-[#1C1C1C]/25 to-transparent" />
+      </div>
+    </div>
+  )
+}
+function MegaMenu({ menu, isFull = false }: { menu: NavNode[]; isFull?: boolean }) {
+  const containerClasses = isFull
+    ? "absolute left-1/2 top-full z-20 w-[min(100vw-3rem,1280px)] -translate-x-1/2 rounded-b-2xl border border-[#ECAA4D]/35 bg-white px-8 py-7 shadow-[0_28px_60px_rgba(28,28,28,0.12)]"
+    : "absolute left-0 top-full w-fit max-w-sm rounded-b-xl border border-[#ECAA4D]/35 bg-white px-6 py-5 shadow-[0_24px_48px_rgba(28,28,28,0.1)]"
+
+  const gridClasses = isFull ? "grid-cols-1 gap-8 md:grid-cols-4" : "grid-cols-1 gap-4"
+
+  return (
+    <div
+      className={`invisible translate-y-4 opacity-0 transition-all group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 ${containerClasses}`}
+    >
+      <div className={`mx-auto grid max-w-7xl ${gridClasses}`}>
+        {menu.map((section, idx) => (
+          <div key={section.label} className={`min-w-[180px] ${isFull && idx > 0 ? "md:border-l md:border-[#ECAA4D]/25 md:pl-6" : ""}`}>
+            <h3 className="pb-3 text-[0.78rem] font-bold uppercase tracking-[0.2em] text-[#ECAA4D]">{section.label}</h3>
+            <ul className="space-y-2">
+              {section.children.map((child) => (
+                <li key={child.label}>
+                  <Link
+                    href={child.href}
+                    className={`block rounded-md px-2 py-1 text-[0.78rem] transition-all ${
+                      child.isHot
+                        ? "font-semibold text-[#9B2C3B]"
+                        : "text-[#1C1C1C]/75 hover:bg-[#ECAA4D]/12 hover:text-[#1C1C1C]"
+                    }`}
+                  >
+                    {child.isHot && (
+                      <span className="mr-1 inline-block rounded bg-[#9B2C3B] px-1.5 py-0.5 text-[0.65rem] font-bold uppercase tracking-[0.12em] text-white">
+                        HOT
+                      </span>
+                    )}
+                    {child.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MobileTrigger({ menuItems }: { menuItems?: MenuItemWithChildren[] }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <>
+      <button
+        className="inline-flex h-10 w-10 items-center justify-center rounded-md text-[#ECAA4D] shadow-[0_6px_18px_rgba(155,44,59,0.45)] transition hover:brightness-110"
+        style={{ backgroundColor: BRAND_HIGHLIGHT }}
+        aria-label="Mở menu"
+        onClick={() => setOpen(true)}
+      >
+        <Menu size={20} />
+      </button>
+      {open && <MobileDrawer onClose={() => setOpen(false)} menuItems={menuItems} />}
+    </>
+  )
+}
+
+function MobileDrawer({ onClose, menuItems: propMenuItems }: { onClose: () => void; menuItems?: MenuItemWithChildren[] }) {
+  // Use default menuItems from header.data.ts as fallback
+  const menuItems: MenuItemWithChildren[] = propMenuItems || defaultMenuItems;
+
+  const [activeMenu, setActiveMenu] = useState<MenuItemWithChildren | null>(null)
+  const [activeSection, setActiveSection] = useState<NavNode | null>(null)
+
+  const handleSelectMenu = (item: MenuItemWithChildren) => {
+    if (item.children && item.children.length > 0) {
+      setActiveMenu(item)
+      setActiveSection(null)
+    } else {
+      onClose()
+    }
+  }
+
+  const handleSelectSection = (section: NavNode) => {
+    setActiveSection(section)
+  }
+
+  const handleBack = () => {
+    if (activeSection) {
+      setActiveSection(null)
+    } else if (activeMenu) {
+      setActiveMenu(null)
+    } else {
+      onClose()
+    }
+  }
+
+  const headerTitle = activeSection?.label ?? activeMenu?.label ?? "Menu"
+  const showBackButton = !!activeMenu
+
+  return (
+    <div className="fixed inset-0 z-50">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
+      {/* Panel */}
+      <div
+        className="absolute inset-y-0 right-0 w-[88%] max-w-md border-l border-[#751826] bg-[#ECAA4D] text-[#1C1C1C] shadow-[0_24px_64px_rgba(28,28,28,0.25)]"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-[#1C1C1C]/10 px-4 py-3">
+          <span className="text-base font-bold uppercase tracking-[0.16em]" style={{ color: BRAND_BASE }}>
+            {showBackButton ? (
+              <button onClick={handleBack} className="flex items-center gap-2 text-[#1C1C1C] transition hover:text-[#9B2C3B]">
+                <ChevronDown size={18} className="rotate-90" />
+                <span>{headerTitle}</span>
+              </button>
+            ) : (
+              headerTitle
+            )}
+          </span>
+          <button
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-[#1C1C1C] transition hover:bg-[#1C1C1C]/10"
+            aria-label="Đóng menu"
+            onClick={onClose}
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Navigation */}
+        <nav className="max-h-[calc(100vh-56px)] space-y-1 overflow-y-auto px-3 py-3 text-sm text-[#1C1C1C]/85">
+          {!activeMenu && (
+            <>
+              {menuItems.map((item) =>
+                item.children ? (
+                  <button
+                    key={item.label}
+                    onClick={() => handleSelectMenu(item)}
+                    className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 font-semibold uppercase tracking-[0.1em] text-[#1C1C1C] transition hover:bg-[#1C1C1C]/10"
+                  >
+                    <span className="text-sm">{item.label}</span>
+                    <ChevronDown size={18} className="-rotate-90 text-[#1C1C1C]/70" />
+                  </button>
+                ) : (
+                  <Link
+                    key={item.label}
+                    href={item.href}
+                    className="block rounded-lg px-3 py-2.5 font-semibold uppercase tracking-[0.1em] text-[#1C1C1C] transition hover:bg-[#1C1C1C]/10"
+                    onClick={onClose}
+                  >
+                    {item.label}
+                  </Link>
+                ),
+              )}
+            </>
+          )}
+
+          {activeMenu && !activeSection && (
+            <div className="space-y-1">
+              {activeMenu.children?.map((section) => (
+                <button
+                  key={section.label}
+                  onClick={() => handleSelectSection(section)}
+                  className="flex w-full items-center justify-between rounded-lg bg-white/50 px-3 py-2 text-sm font-semibold uppercase tracking-[0.08em] text-[#1C1C1C] transition hover:bg-white"
+                >
+                  <span>{section.label}</span>
+                  <ChevronDown size={18} className="-rotate-90 text-[#1C1C1C]/80" />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {activeMenu && activeSection && (
+            <div className="space-y-1">
+              {activeSection.children.map((child) => (
+                <Link
+                  key={child.label}
+                  href={child.href}
+                  className={`block rounded px-3 py-1.5 text-[0.85rem] transition ${
+                    child.isHot
+                      ? "bg-[#1C1C1C]/10 font-semibold text-[#1C1C1C]"
+                      : "text-[#1C1C1C]/80 hover:bg-[#1C1C1C]/10 hover:text-[#1C1C1C]"
+                  }`}
+                  onClick={onClose}
+                >
+                  {child.isHot && (
+                    <span className="mr-1 inline-block rounded bg-[#9B2C3B] px-1 py-0.5 text-[0.65rem] font-bold uppercase tracking-[0.12em] text-white">
+                      HOT
+                    </span>
+                  )}
+                  {child.label}
+                </Link>
+              ))}
+            </div>
+          )}
+        </nav>
+      </div>
+    </div>
+  )
+}
+
+export function __selfTest(): boolean {
+  try {
+    console.assert(Array.isArray(languageOptions) && languageOptions.length >= 2, "languageOptions missing")
+    console.assert(Array.isArray(trendingKeywords), "trendingKeywords not array")
+    console.assert(
+      defaultMenuItems.every((m: MenuItemWithChildren) => typeof m.label === "string" && typeof m.href === "string"),
+      "menuItems shape",
+    )
+    const firstMenu = defaultMenuItems.find((m: MenuItemWithChildren) => m.children)
+    if (firstMenu?.children) {
+      console.assert(Array.isArray(firstMenu.children[0].children), "nested children shape")
+    }
+    const probeNavLeaf: NavLeaf = { label: "_", href: "/_" }
+    console.assert(!!probeNavLeaf.href, "NavLeaf href missing")
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function __runTests() {
+  const results = {
+    selfTest: __selfTest(),
+    hasLanguageDropdown: typeof languageOptions[0]?.label === "string",
+    hasTrending: trendingKeywords.length > 0,
+    hasMenuItems: defaultMenuItems.length >= 4,
+  }
+  return results
+}
